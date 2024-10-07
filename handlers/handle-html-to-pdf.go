@@ -1,17 +1,25 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	pdf "github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"github.com/gustavodamazio/go-test/models"
+	"github.com/gustavodamazio/go-test/services/callback"
+	"github.com/gustavodamazio/go-test/services/storage"
 )
 
-func HandleHtmlToPDF(w http.ResponseWriter, r *http.Request) {
+func HandleHtmlToPDF(storageService *storage.StorageService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handleHtmlToPDF(w, r, storageService)
+	}
+}
+
+func handleHtmlToPDF(w http.ResponseWriter, r *http.Request, storageService *storage.StorageService) {
 	// Read JSON string from the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -28,9 +36,15 @@ func HandleHtmlToPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	html := requestBody.Data.HTML
-	if html == "" {
-		http.Error(w, "HTML content is empty", http.StatusBadRequest)
+	html_storage_path := requestBody.Data.HTML_STORAGE_PATH
+	if html_storage_path == "" {
+		http.Error(w, "HTML storage path is empty", http.StatusBadRequest)
+		return
+	}
+
+	html_file, err := storageService.ReadFile(html_storage_path)
+	if err != nil {
+		http.Error(w, "Failed to read HTML file", http.StatusInternalServerError)
 		return
 	}
 
@@ -42,7 +56,7 @@ func HandleHtmlToPDF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add HTML content to the PDF generator
-	pdfg.AddPage(pdf.NewPageReader(strings.NewReader(html)))
+	pdfg.AddPage(pdf.NewPageReader(bytes.NewReader(html_file)))
 	pdfg.Orientation.Set(pdf.OrientationLandscape)
 
 	// Generate the PDF
@@ -53,13 +67,28 @@ func HandleHtmlToPDF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set response headers
-	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", "attachment; filename=output.pdf")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(pdfg.Bytes())))
+	html_storage_path_output := html_storage_path + "-output.pdf"
+	err = storageService.WriteFile(html_storage_path_output, pdfg.Bytes())
+	if err != nil {
+		http.Error(w, "Failed to write PDF file", http.StatusInternalServerError)
+		return
+	}
 
-	// Write PDF bytes to the response
-	_, err = w.Write(pdfg.Bytes())
+	// Send callback
+	if requestBody.Data.CALLBACK_URL != "" {
+		callbackService := callback.NewCallbackService()
+		err = callbackService.SendCallback(requestBody)
+		if err != nil {
+			fmt.Printf("Failed to send callback: %v\n", err)
+			return
+		}
+	}
+
+	// Set response headers
+	response := fmt.Sprintf(`{"data":{"message":"PDF generated successfully","pdf_storage_path": "%s"}}`, html_storage_path_output)
+	w.Header().Set("Content-Type", "application/json")
+	// Write reponse to the client with a success message and output file path
+	_, err = w.Write([]byte(response))
 	if err != nil {
 		http.Error(w, "Failed to send PDF", http.StatusInternalServerError)
 		return

@@ -14,3 +14,6 @@ docker build -t go-html-to-pdf .
 ```bash
 docker run --rm -p 8080:8080 go-html-to-pdf
 ```
+
+## System Design Image
+![System Design](assets/images/sd.png)
